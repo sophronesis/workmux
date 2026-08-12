@@ -35,6 +35,10 @@ pub struct StatusIcons {
     pub waiting: Option<String>,
     /// Icon shown when agent is done. Default: ✅
     pub done: Option<String>,
+    /// Icon shown when an agent is idle (no pending status - e.g. a completed
+    /// run whose done icon was acknowledged by focusing the window).
+    /// Sidebar-only. Default: dim "○"
+    pub idle: Option<String>,
 }
 
 impl StatusIcons {
@@ -48,6 +52,10 @@ impl StatusIcons {
 
     pub fn done(&self) -> &str {
         self.done.as_deref().unwrap_or("✅")
+    }
+
+    pub fn idle(&self) -> &str {
+        self.idle.as_deref().unwrap_or("○ ")
     }
 }
 
@@ -2503,6 +2511,7 @@ impl Config {
             working: project.status_icons.working.or(self.status_icons.working),
             waiting: project.status_icons.waiting.or(self.status_icons.waiting),
             done: project.status_icons.done.or(self.status_icons.done),
+            idle: project.status_icons.idle.or(self.status_icons.idle),
         };
 
         // Dashboard actions: per-field override
@@ -2911,6 +2920,7 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   working: "🤖"
 #   waiting: "💬"
 #   done: "✅"
+#   idle: "○ "  # sidebar-only: agent alive with no pending status
 
 #-------------------------------------------------------------------------------
 # Agent & AI

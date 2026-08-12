@@ -1007,8 +1007,16 @@ pub(crate) fn status_icon_and_style(
             (spans, base_style)
         }
         None => {
+            // Idle: agent is alive but has no pending status (e.g. its done
+            // icon was acknowledged by focusing the window). Render a quiet
+            // glyph instead of blank so every tile keeps a status column.
             let style = Style::default().fg(app.palette.dimmed);
-            (vec![("  ".to_string(), style)], style)
+            let spans = if use_nf && app.status_icons.idle.is_none() {
+                vec![("\u{f10c}".to_string(), style)] // nf-fa-circle_o
+            } else {
+                tmux_style::parse_tmux_styles(app.status_icons.idle(), style)
+            };
+            (spans, style)
         }
     }
 }
