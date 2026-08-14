@@ -28,6 +28,7 @@ mod panes;
 mod runtime;
 mod snapshot;
 mod template;
+mod terminals;
 mod ui;
 
 use crate::cmd::Cmd;

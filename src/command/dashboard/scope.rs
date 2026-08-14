@@ -95,6 +95,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 

@@ -166,14 +166,14 @@ impl ResolvedAgentIcons {
 }
 
 const DEFAULT_COMPACT_TEMPLATE: &str =
-    "{status_icon} {primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}";
+    "{status_icon} #[dim]{terminal}#[default]{primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}";
 const DEFAULT_TILE_TEMPLATES: &[&str] = &[
-    "{primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}",
+    "#[dim]{terminal}#[default]{primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}",
     "{secondary} {fill} {git_stats}",
     "{pane_title} {fill} {pr_checks}",
 ];
 const DEFAULT_HORIZONTAL_TEMPLATES: &[&str] = &[
-    "{status_icon} {primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}",
+    "{status_icon} #[dim]{terminal}#[default]{primary}#[dim]{remote}#[default] {pane_suffix} {fill} {elapsed}",
     "{secondary} {fill} {git_stats}",
     "{pane_title} {fill} {pr_checks}",
 ];
@@ -986,6 +986,22 @@ impl SidebarApp {
     /// considers user-authored values. The window name is never promoted for
     /// non-tmux backends (signaled by `window_cmd: None`).
     pub fn resolve_agent_labels(&self, agent: &AgentPane) -> (String, String) {
+        // A terminal already knows its own name. The resolver below is about
+        // agent windows - project, worktree, prefixes - and has nothing useful
+        // to say about a shell sitting in a directory.
+        //
+        // Compact mode has one line, so it gets the joined form. Tiles have
+        // three, so folder and branch take a line each and the command rides
+        // the third via pane_title - which also stops long names truncating.
+        if let Some(label) = &agent.terminal {
+            return match self.layout_mode {
+                SidebarLayoutMode::Compact => (label.joined(), String::new()),
+                SidebarLayoutMode::Tiles => (
+                    label.dir.clone(),
+                    label.branch.clone().unwrap_or_default(),
+                ),
+            };
+        }
         let project = extract_project_name(&agent.path);
         let (worktree, _is_main) = extract_worktree_name(
             &agent.session,
@@ -1538,6 +1554,7 @@ mod filter_tests {
                 window_cmd: None,
                 agent_command: None,
                 agent_kind: None,
+                terminal: None,
             },
             AgentPane {
                 session: "s".to_string(),
@@ -1553,6 +1570,7 @@ mod filter_tests {
                 window_cmd: None,
                 agent_command: None,
                 agent_kind: None,
+                terminal: None,
             },
         ];
         let active_panes = std::collections::HashSet::from(["%2".to_string()]);

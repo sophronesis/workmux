@@ -1633,6 +1633,8 @@ pub fn run() -> Result<()> {
         .run()?;
 
     let mut inactivity_tracker = InactivityTracker::new(Duration::from_secs(10));
+    let mut activity_tracker = super::terminals::ActivityTracker::default();
+    let mut branch_cache = super::terminals::BranchCache::default();
     let mut last_interrupted: HashSet<String> = HashSet::new();
     let mut last_runtime_write = Instant::now();
     let backend_name = mux.name().to_string();
@@ -1672,14 +1674,15 @@ pub fn run() -> Result<()> {
             let agents = StateStore::new()
                 .and_then(|store| store.load_reconciled_agents(mux.as_ref()))
                 .ok();
-            let Some(agents) = agents else { continue };
+            let Some(mut agents) = agents else { continue };
 
-            let (position, layout_mode, sort) = {
+            let (position, layout_mode, sort, terminal_icons) = {
                 let cfg = config.lock().unwrap();
                 (
                     super::read_sidebar_position(&cfg),
                     read_sidebar_layout_mode(&cfg).unwrap_or_default(),
                     cfg.sidebar.sort.unwrap_or_default(),
+                    cfg.sidebar.terminal_icons.clone().unwrap_or_default(),
                 )
             };
             let filter_mode = read_sidebar_filter_mode();
@@ -1698,6 +1701,32 @@ pub fn run() -> Result<()> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+            // Terminals: every live pane that is not an agent, rebuilt from
+            // scratch each tick and merged into the same list, so recency
+            // sorting interleaves them with agents and jumping just works.
+            if let Ok(live_panes) = mux.get_all_live_pane_info() {
+                activity_tracker.observe(&live_panes, now_ts);
+                let agent_ids: HashSet<String> =
+                    agents.iter().map(|a| a.pane_id.clone()).collect();
+                // Hosts already represented by mirrored rows; their local ssh
+                // panes are then redundant as terminals.
+                let mirrored_hosts: HashSet<String> = agents
+                    .iter()
+                    .filter_map(|a| crate::multiplexer::remote_host(&a.pane_id))
+                    .map(str::to_string)
+                    .collect();
+                agents.extend(super::terminals::synthesize(
+                    &live_panes,
+                    &agent_ids,
+                    &mirrored_hosts,
+                    &activity_tracker,
+                    &mut branch_cache,
+                    &terminal_icons,
+                ));
+                branch_cache
+                    .retain_live(&live_panes.values().map(|p| p.working_dir.clone()).collect());
+            }
+
             let heartbeat_due = last_runtime_write.elapsed() >= Duration::from_secs(10);
 
             // ── Compute tick (no I/O) ──
@@ -1742,6 +1771,7 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .map(|a| GitWorkerPath {
                     path: a.path.clone(),
                     is_stale: a
@@ -1756,6 +1786,7 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .filter_map(|a| {
                     let branch = output.snapshot.git_statuses.get(&a.path)?.branch.as_ref()?;
                     Some(GithubWorkerPath {
@@ -1772,11 +1803,12 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .map(|a| a.path.clone())
                 .collect();
             project_config_cache.retain(|p, _| live_paths.contains(p));
             let mut config_dirs: HashSet<PathBuf> = HashSet::new();
-            for a in &output.snapshot.agents {
+            for a in output.snapshot.agents.iter().filter(|a| a.terminal.is_none()) {
                 let dir = if let Some(d) = project_config_cache.get(&a.path) {
                     Some(d.clone())
                 } else {
@@ -2064,6 +2096,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 
@@ -2577,6 +2610,7 @@ mod tests {
                 session_name: None,
                 boot_id: None,
                 agent_kind: None,
+                terminal: None,
             };
             store.upsert_agent(&state).unwrap();
         }

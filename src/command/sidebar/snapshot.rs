@@ -88,6 +88,12 @@ pub fn build_snapshot(
 
     // Suppress Done/Waiting when tmux's auto-clear hook has already cleared
     for agent in &mut agents {
+        // Terminals have no status hook and so no @workmux_pane_status to
+        // observe; leaving them in here would clear the status the sidebar
+        // just derived for them.
+        if agent.terminal.is_some() {
+            continue;
+        }
         if let Some(observed) = tmux_statuses.get(&agent.pane_id) {
             match agent.status {
                 Some(AgentStatus::Done) if observed.as_deref() != Some(done_icon) => {
@@ -216,6 +222,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 

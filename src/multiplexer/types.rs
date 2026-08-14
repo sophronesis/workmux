@@ -67,6 +67,35 @@ pub enum AgentStatus {
     Done,
 }
 
+/// Name of a terminal row, kept in parts rather than pre-joined so each
+/// layout can spend the space it has: one line in compact mode, one part per
+/// line in tiles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalLabel {
+    /// Working directory, shortened for a prompt (see `sidebar::terminals`).
+    pub dir: String,
+    /// Branch of the repo the directory belongs to, if any.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Foreground command - `nvim`, `ssh`, or the shell itself at a prompt.
+    pub command: String,
+    /// Icon for a recognised long-running TUI (nvim, htop, lazygit, ...).
+    /// `Some` is also what marks the row as one: such a program is *sitting
+    /// there*, not working, so it renders idle rather than a spinner.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+impl TerminalLabel {
+    /// `dir/branch/command`, dropping the branch outside a repo.
+    pub fn joined(&self) -> String {
+        match &self.branch {
+            Some(branch) => format!("{}/{}/{}", self.dir, branch, self.command),
+            None => format!("{}/{}", self.dir, self.command),
+        }
+    }
+}
+
 /// Information about a specific pane running a workmux agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentPane {
@@ -112,6 +141,12 @@ pub struct AgentPane {
     /// before falling back to stem-based profile resolution.
     #[serde(default)]
     pub agent_kind: Option<String>,
+    /// Set when this row is a plain shell pane rather than an agent, holding
+    /// its name. Terminals are synthesized from the live pane list every tick
+    /// (see `sidebar::terminals`) and never persisted, so this is the only
+    /// thing that marks one.
+    #[serde(default)]
+    pub terminal: Option<TerminalLabel>,
 }
 
 /// Parameters for creating a new window/tab
