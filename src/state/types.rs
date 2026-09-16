@@ -131,6 +131,13 @@ pub struct AgentState {
     /// are synthesized from live panes.
     #[serde(default)]
     pub terminal: Option<crate::multiplexer::TerminalLabel>,
+    /// Unix timestamp when the current task started: the moment the agent
+    /// last went from not-working to Working. Survives Waiting (a permission
+    /// prompt is part of the task) and is cleared on Done. Task duration for
+    /// the completion notification comes from here - `status_ts` cannot
+    /// serve, it resets on every Working <-> Waiting flip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_since: Option<u64>,
 }
 
 impl AgentState {

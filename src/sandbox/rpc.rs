@@ -485,13 +485,15 @@ fn handle_set_status(status: &str, ctx: &RpcContext) -> RpcResponse {
     match ctx.mux.set_status(&ctx.pane_id, &icon, auto_clear) {
         Ok(()) => {
             // Persist agent state to StateStore so the dashboard sees this agent
-            if let Some(agent_status) = agent_status {
-                crate::state::persist_agent_update(
+            if let Some(agent_status) = agent_status
+                && let Some(done) = crate::state::persist_agent_update(
                     &*ctx.mux,
                     &ctx.pane_id,
                     Some(agent_status),
                     None,
-                );
+                )
+            {
+                crate::notify::task_done(&config, &done);
             }
             RpcResponse::Ok
         }
@@ -511,7 +513,7 @@ fn handle_set_title(title: &str, ctx: &RpcContext) -> RpcResponse {
     {
         Ok(_) => {
             // Persist title to StateStore so the dashboard sees it
-            crate::state::persist_agent_update(
+            let _ = crate::state::persist_agent_update(
                 &*ctx.mux,
                 &ctx.pane_id,
                 None,

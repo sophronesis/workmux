@@ -244,6 +244,7 @@ mod tests {
             boot_id: None,
             agent_kind: agent_kind.map(|kind| kind.to_string()),
             terminal: None,
+            working_since: None,
         }
     }
 

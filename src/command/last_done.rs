@@ -174,6 +174,7 @@ mod tests {
             boot_id: None,
             agent_kind: None,
             terminal: None,
+            working_since: None,
         }
     }
 

@@ -490,6 +490,15 @@ pub struct Config {
     #[serde(default)]
     pub status_icons: StatusIcons,
 
+    /// Desktop notification when an agent finishes a task (Working -> Done).
+    /// Default: true
+    #[serde(default)]
+    pub notify_done: Option<bool>,
+
+    /// Tasks shorter than this many seconds finish silently. Default: 60
+    #[serde(default)]
+    pub notify_done_min_secs: Option<u64>,
+
     /// Configuration for LLM-based branch name generation
     #[serde(default)]
     pub auto_name: Option<AutoNameConfig>,
@@ -2430,6 +2439,8 @@ impl Config {
             panes,
             windows,
             status_format,
+            notify_done,
+            notify_done_min_secs,
             nerdfont,
             auto_update_check,
             prompt_file_only,
@@ -2944,6 +2955,13 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 # Auto-apply agent status icons to tmux window format.
 # Default: true
 # status_format: true
+
+# Desktop notification when an agent finishes a task (status goes from
+# working to done). Fires once per task, and only for tasks that ran at least
+# `notify_done_min_secs` - quick back-and-forth stays silent.
+# Defaults: on, 60 seconds. Set 0 to notify on every completion.
+# notify_done: true
+# notify_done_min_secs: 60
 
 # Custom icons for agent status display.
 # status_icons:

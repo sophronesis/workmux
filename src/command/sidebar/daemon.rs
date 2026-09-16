@@ -1706,8 +1706,7 @@ pub fn run() -> Result<()> {
             // sorting interleaves them with agents and jumping just works.
             if let Ok(live_panes) = mux.get_all_live_pane_info() {
                 activity_tracker.observe(&live_panes, now_ts);
-                let agent_ids: HashSet<String> =
-                    agents.iter().map(|a| a.pane_id.clone()).collect();
+                let agent_ids: HashSet<String> = agents.iter().map(|a| a.pane_id.clone()).collect();
                 // Hosts already represented by mirrored rows; their local ssh
                 // panes are then redundant as terminals.
                 let mirrored_hosts: HashSet<String> = agents
@@ -1808,7 +1807,12 @@ pub fn run() -> Result<()> {
                 .collect();
             project_config_cache.retain(|p, _| live_paths.contains(p));
             let mut config_dirs: HashSet<PathBuf> = HashSet::new();
-            for a in output.snapshot.agents.iter().filter(|a| a.terminal.is_none()) {
+            for a in output
+                .snapshot
+                .agents
+                .iter()
+                .filter(|a| a.terminal.is_none())
+            {
                 let dir = if let Some(d) = project_config_cache.get(&a.path) {
                     Some(d.clone())
                 } else {
@@ -2611,6 +2615,7 @@ mod tests {
                 boot_id: None,
                 agent_kind: None,
                 terminal: None,
+                working_since: None,
             };
             store.upsert_agent(&state).unwrap();
         }
