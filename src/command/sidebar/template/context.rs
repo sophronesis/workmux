@@ -10,7 +10,7 @@ use crate::multiplexer::agent::resolve_profile_for_display;
 use crate::multiplexer::{AgentPane, AgentStatus};
 use crate::ui::theme::ThemePalette;
 
-use super::super::app::{ResolvedAgentIcons, SidebarApp};
+use super::super::app::{ResolvedAgentIcons, SidebarApp, SidebarLayoutMode, with_name};
 use super::TokenId;
 
 /// Pre-computed values for every piece of row metadata.
@@ -100,7 +100,11 @@ impl<'a> RowContext<'a> {
             .map(|ts| format_compact_elapsed(now_secs.saturating_sub(ts)))
             .unwrap_or_default();
 
-        let pane_title = build_pane_title(agent, &primary, &secondary, app.window_prefix());
+        let mut pane_title = build_pane_title(agent, &primary, &secondary, app.window_prefix());
+        // A named terminal tile shows the name in front of its command.
+        if agent.terminal.is_some() && app.layout_mode != SidebarLayoutMode::Compact {
+            pane_title = pane_title.map(|cmd| with_name(app.pane_name(&agent.pane_id), cmd));
+        }
         let terminal_marker = match &agent.terminal {
             Some(label) => match &label.icon {
                 Some(icon) => format!("{icon} "),

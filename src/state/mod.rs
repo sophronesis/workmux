@@ -10,7 +10,7 @@ pub(crate) mod test_support;
 mod types;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -42,7 +42,7 @@ pub fn persist_agent_update(
     pane_id: &str,
     status: Option<AgentStatus>,
     title_override: Option<String>,
-) {
+) -> Option<TaskCompletion> {
     let pane_key = PaneKey {
         backend: mux.name().to_string(),
         instance: mux.instance_id(),
@@ -53,11 +53,11 @@ pub fn persist_agent_update(
         Ok(Some(info)) => info,
         Ok(None) => {
             warn!(%pane_id, "pane not found, skipping state persist");
-            return;
+            return None;
         }
         Err(e) => {
             warn!(error = %e, "failed to get live pane info, skipping state persist");
-            return;
+            return None;
         }
     };
 
@@ -66,10 +66,15 @@ pub fn persist_agent_update(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // Load existing state to merge with
+    // Load existing state to merge with. A file whose pane_pid differs from
+    // the live pane belongs to a dead agent whose pane id got recycled -
+    // reconcile deletes it on the next daemon tick, but this hook may run
+    // first, and inheriting its status_ts/title would clock the new task
+    // from days ago.
     let existing = StateStore::new()
         .ok()
-        .and_then(|store| store.get_agent(&pane_key).ok().flatten());
+        .and_then(|store| store.get_agent(&pane_key).ok().flatten())
+        .filter(|e| live_info.pid.is_none_or(|pid| e.pane_pid == pid));
 
     // Resolve status: explicit update wins, otherwise preserve existing
     let final_status = status.or(existing.as_ref().and_then(|e| e.status));
@@ -80,6 +85,17 @@ pub fn persist_agent_update(
     } else {
         now
     };
+
+    // Task clock: carried across Working <-> Waiting, closed on Done. Only an
+    // explicit status change can complete a task - title-only updates pass
+    // `status: None` and must not be mistaken for a transition.
+    let (working_since, completed_secs) = task_timing(
+        existing.as_ref().and_then(|e| e.status),
+        existing.as_ref().and_then(|e| e.working_since),
+        existing.as_ref().and_then(|e| e.status_ts),
+        status,
+        now,
+    );
 
     // Capture existing agent_kind before `existing` is consumed below.
     let existing_agent_kind = existing.as_ref().and_then(|e| e.agent_kind.clone());
@@ -127,12 +143,74 @@ pub fn persist_agent_update(
         // workmux only ever writes state for agents; terminal rows are
         // synthesized from live panes, or mirrored in from another machine
         terminal: None,
+        working_since,
     };
 
     if let Ok(store) = StateStore::new()
         && let Err(e) = store.upsert_agent(&state)
     {
         warn!(error = %e, "failed to persist agent state");
+    }
+
+    // Names are read live at Done time, so a window/session renamed mid-task
+    // and a title the agent rewrote (Claude Code `/rename`) show up in the
+    // notification - same live-over-stored preference the sidebar applies.
+    completed_secs.map(|duration_secs| TaskCompletion {
+        duration_secs,
+        session_name: state.session_name.clone(),
+        window_name: state.window_name.clone(),
+        pane_title: live_title_for_classify.or(state.pane_title.clone()),
+        workdir: state.workdir.clone(),
+    })
+}
+
+/// A task the agent just finished: reported by `persist_agent_update` exactly
+/// once, on the status change *into* Done from Working or Waiting. A repeated
+/// `done` (Stop hook firing twice, a stray PostToolUse) finds the stored
+/// status already Done and produces nothing - this is what keeps the
+/// completion notification to a single shot per task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskCompletion {
+    /// Wall-clock seconds from the first Working of this task to Done.
+    pub duration_secs: u64,
+    pub session_name: Option<String>,
+    pub window_name: Option<String>,
+    /// Agent-set pane title, live at Done time (Claude Code writes its
+    /// session summary here).
+    pub pane_title: Option<String>,
+    pub workdir: PathBuf,
+}
+
+/// Advance the task clock for one status update.
+///
+/// Returns the `working_since` to store and, when this update closes a task,
+/// the task's duration. `prev_status_ts` is only a fallback start for state
+/// files written before `working_since` existed.
+fn task_timing(
+    prev_status: Option<AgentStatus>,
+    prev_since: Option<u64>,
+    prev_status_ts: Option<u64>,
+    update: Option<AgentStatus>,
+    now: u64,
+) -> (Option<u64>, Option<u64>) {
+    let in_task = matches!(
+        prev_status,
+        Some(AgentStatus::Working) | Some(AgentStatus::Waiting)
+    );
+    // Start of the task in flight, if any: recorded start, else the timestamp
+    // of the status that opened it (pre-field state files), else unknown.
+    let started = prev_since.or(if in_task { prev_status_ts } else { None });
+
+    match update {
+        // title-only refresh: nothing moved
+        None => (prev_since, None),
+        Some(AgentStatus::Working) | Some(AgentStatus::Waiting) => {
+            (Some(started.unwrap_or(now)), None)
+        }
+        Some(AgentStatus::Done) => {
+            let completed = in_task.then(|| now.saturating_sub(started.unwrap_or(now)));
+            (None, completed)
+        }
     }
 }
 
@@ -150,6 +228,81 @@ fn merge_agent_kind(new: Option<String>, existing: Option<String>) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use AgentStatus::{Done, Waiting, Working};
+
+    #[test]
+    fn task_starts_on_first_working() {
+        assert_eq!(
+            task_timing(None, None, None, Some(Working), 100),
+            (Some(100), None)
+        );
+        assert_eq!(
+            task_timing(Some(Done), None, Some(50), Some(Working), 100),
+            (Some(100), None)
+        );
+    }
+
+    #[test]
+    fn task_clock_survives_working_and_waiting_flips() {
+        assert_eq!(
+            task_timing(Some(Working), Some(100), Some(100), Some(Working), 130),
+            (Some(100), None)
+        );
+        assert_eq!(
+            task_timing(Some(Working), Some(100), Some(100), Some(Waiting), 160),
+            (Some(100), None)
+        );
+        assert_eq!(
+            task_timing(Some(Waiting), Some(100), Some(160), Some(Working), 190),
+            (Some(100), None)
+        );
+    }
+
+    #[test]
+    fn done_closes_task_with_full_duration() {
+        assert_eq!(
+            task_timing(Some(Working), Some(100), Some(190), Some(Done), 400),
+            (None, Some(300))
+        );
+        // waiting -> done (permission denied, agent stopped) is still a completion
+        assert_eq!(
+            task_timing(Some(Waiting), Some(100), Some(190), Some(Done), 400),
+            (None, Some(300))
+        );
+    }
+
+    #[test]
+    fn repeated_done_is_not_a_completion() {
+        assert_eq!(
+            task_timing(Some(Done), None, Some(400), Some(Done), 410),
+            (None, None)
+        );
+        assert_eq!(task_timing(None, None, None, Some(Done), 410), (None, None));
+    }
+
+    #[test]
+    fn title_only_update_keeps_clock_untouched() {
+        assert_eq!(
+            task_timing(Some(Working), Some(100), Some(100), None, 150),
+            (Some(100), None)
+        );
+        assert_eq!(
+            task_timing(Some(Done), None, Some(400), None, 450),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn legacy_state_without_working_since_falls_back_to_status_ts() {
+        assert_eq!(
+            task_timing(Some(Working), None, Some(100), Some(Done), 400),
+            (None, Some(300))
+        );
+        assert_eq!(
+            task_timing(Some(Working), None, Some(100), Some(Waiting), 200),
+            (Some(100), None)
+        );
+    }
 
     #[test]
     fn merge_keeps_existing_when_new_is_none() {

@@ -48,6 +48,19 @@ doing.
 - 💬 = agent is waiting for user input
 - ✅ = agent finished (auto-clears on window focus in tmux)
 
+## Completion notifications
+
+When an agent's status goes from working to done, workmux sends a desktop
+notification (Notification Center on macOS, D-Bus on Linux) naming the window,
+how long the task ran, and the agent's pane title. It fires once per task, on
+the transition itself, and only for tasks that ran at least a minute - quick
+back-and-forth stays silent. Tune or disable it in the config:
+
+```yaml
+notify_done: true # default
+notify_done_min_secs: 60 # default; 0 notifies on every completion
+```
+
 ## Automated setup
 
 Run `workmux setup` to automatically detect your agent CLIs and install status tracking hooks:

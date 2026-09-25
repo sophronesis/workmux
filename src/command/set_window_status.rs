@@ -165,8 +165,13 @@ fn apply_status_update(
             // Update backend UI (status bar icon)
             mux.set_status(&pane_id, icon, auto_clear)?;
 
-            // Persist to state store so the dashboard sees this agent
-            crate::state::persist_agent_update(&*mux, &pane_id, Some(status), None);
+            // Persist to state store so the dashboard sees this agent; a
+            // Working -> Done change comes back as a completed task
+            if let Some(done) =
+                crate::state::persist_agent_update(&*mux, &pane_id, Some(status), None)
+            {
+                crate::notify::task_done(config, &done);
+            }
         }
     }
 

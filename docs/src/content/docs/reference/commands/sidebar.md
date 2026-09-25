@@ -33,6 +33,7 @@ Each agent row displays:
 | `v`     | Toggle layout mode       |
 | `f`     | Toggle session filter    |
 | `z`     | Toggle sleeping on agent |
+| `r`     | Name the selected row    |
 | `q`     | Open quit confirmation   |
 
 ## Mouse support
