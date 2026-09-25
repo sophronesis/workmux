@@ -52,6 +52,10 @@ pub struct SidebarSnapshot {
     /// Pane IDs of agents manually marked as sleeping by the user.
     #[serde(default)]
     pub sleeping_pane_ids: HashSet<String>,
+    /// Remote agent highlighted as active (recorded on jump-to-remote, valid
+    /// until the user switches to a different local window).
+    #[serde(default)]
+    pub remote_active_pane_id: Option<String>,
     pub agents: Vec<AgentPane>,
     /// Increments whenever the daemon reloads the merged config.
     /// Clients use this to trigger their own per-project config reload.
@@ -84,6 +88,12 @@ pub fn build_snapshot(
 
     // Suppress Done/Waiting when tmux's auto-clear hook has already cleared
     for agent in &mut agents {
+        // Terminals have no status hook and so no @workmux_pane_status to
+        // observe; leaving them in here would clear the status the sidebar
+        // just derived for them.
+        if agent.terminal.is_some() {
+            continue;
+        }
         if let Some(observed) = tmux_statuses.get(&agent.pane_id) {
             match agent.status {
                 Some(AgentStatus::Done) if observed.as_deref() != Some(done_icon) => {
@@ -187,6 +197,7 @@ pub fn build_snapshot(
         check_statuses,
         interrupted_pane_ids: HashSet::new(),
         sleeping_pane_ids: live_sleeping,
+        remote_active_pane_id: None,
         agents,
         config_version: 0,
     }
@@ -211,6 +222,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 

@@ -243,6 +243,7 @@ mod tests {
             session_name: None,
             boot_id: None,
             agent_kind: agent_kind.map(|kind| kind.to_string()),
+            terminal: None,
         }
     }
 

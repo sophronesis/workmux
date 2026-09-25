@@ -536,6 +536,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 
@@ -554,6 +555,7 @@ mod tests {
             status_icon_spans: vec![("💤".to_string(), ratatui::style::Style::default())],
             status_color: ratatui::style::Color::Reset,
             pane_title: None,
+            terminal_marker: String::new(),
             git_status: None,
             pr_summary: None,
             check_summary: None,

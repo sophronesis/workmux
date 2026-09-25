@@ -126,6 +126,11 @@ pub struct AgentState {
     /// over time, so we lock in the first definitive answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_kind: Option<String>,
+    /// Name of a mirrored *terminal* pane. Only ever set by an external state
+    /// mirror - workmux itself writes state for agents, and local terminals
+    /// are synthesized from live panes.
+    #[serde(default)]
+    pub terminal: Option<crate::multiplexer::TerminalLabel>,
 }
 
 impl AgentState {
@@ -148,6 +153,7 @@ impl AgentState {
             window_cmd: None,
             agent_command: Some(self.command.clone()),
             agent_kind: self.agent_kind.clone(),
+            terminal: self.terminal.clone(),
         }
     }
 }

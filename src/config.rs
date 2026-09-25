@@ -35,6 +35,14 @@ pub struct StatusIcons {
     pub waiting: Option<String>,
     /// Icon shown when agent is done. Default: ✅
     pub done: Option<String>,
+    /// Icon shown when an agent is idle (no pending status - e.g. a completed
+    /// run whose done icon was acknowledged by focusing the window).
+    /// Sidebar-only. Default: dim "○"
+    pub idle: Option<String>,
+    /// Marker printed before the name on a terminal row - a plain shell pane
+    /// rather than an agent. Not a status: the icon beside it means what it
+    /// means for an agent. Sidebar-only. Default: dim ">_"
+    pub terminal: Option<String>,
 }
 
 impl StatusIcons {
@@ -48,6 +56,16 @@ impl StatusIcons {
 
     pub fn done(&self) -> &str {
         self.done.as_deref().unwrap_or("✅")
+    }
+
+    pub fn idle(&self) -> &str {
+        self.idle.as_deref().unwrap_or("○ ")
+    }
+
+    pub fn terminal(&self) -> &str {
+        // two columns, so it lines up with the double-width emoji the other
+        // statuses default to
+        self.terminal.as_deref().unwrap_or(">_")
     }
 }
 
@@ -180,6 +198,12 @@ impl AgentIconConfig {
 /// either a bare icon string or `{ icon, color }`.
 pub type AgentIcons = BTreeMap<String, AgentIconConfig>;
 
+/// Per-program icon overrides for terminal rows. Maps a foreground command
+/// (e.g. "nvim", "htop") to the glyph to show instead of the `>_` marker.
+/// Merged over the built-in table; an empty string removes an entry, which
+/// also drops the program back to spinner-while-running.
+pub type TerminalIcons = BTreeMap<String, String>;
+
 /// Configuration for horizontal sidebar rendering.
 #[derive(Debug, Deserialize, Serialize, Default, Clone)]
 pub struct HorizontalSidebarConfig {
@@ -221,6 +245,9 @@ pub struct SidebarConfig {
 
     /// Per-agent icon overrides.
     pub agent_icons: Option<AgentIcons>,
+    /// Icon per foreground command on terminal rows, merged over the
+    /// built-in TUI table. See `sidebar::terminals::TUI_ICONS`.
+    pub terminal_icons: Option<TerminalIcons>,
 
     /// Row ordering: "recency" (default) or "window".
     pub sort: Option<SidebarSort>,
@@ -2503,6 +2530,8 @@ impl Config {
             working: project.status_icons.working.or(self.status_icons.working),
             waiting: project.status_icons.waiting.or(self.status_icons.waiting),
             done: project.status_icons.done.or(self.status_icons.done),
+            idle: project.status_icons.idle.or(self.status_icons.idle),
+            terminal: project.status_icons.terminal.or(self.status_icons.terminal),
         };
 
         // Dashboard actions: per-field override
@@ -2540,6 +2569,16 @@ impl Config {
             agent_icons: match (
                 self.sidebar.agent_icons.clone(),
                 project.sidebar.agent_icons.clone(),
+            ) {
+                (Some(mut global), Some(proj)) => {
+                    global.extend(proj);
+                    Some(global)
+                }
+                (g, p) => p.or(g),
+            },
+            terminal_icons: match (
+                self.sidebar.terminal_icons.clone(),
+                project.sidebar.terminal_icons.clone(),
             ) {
                 (Some(mut global), Some(proj)) => {
                     global.extend(proj);
@@ -2911,6 +2950,16 @@ pub const EXAMPLE_PROJECT_CONFIG: &str = r#"# workmux project configuration
 #   working: "🤖"
 #   waiting: "💬"
 #   done: "✅"
+#   idle: "○ "  # sidebar-only: agent alive with no pending status
+#   terminal: ">_"  # sidebar-only: plain shell pane, not an agent
+
+# Icon per foreground command on terminal rows, merged over the built-in TUI
+# table. Listed programs render idle instead of a spinner - they sit there
+# rather than grinding towards an exit. Set one to "" to remove it.
+# terminal_icons:
+#   nvim: ""
+#   cargo: ""
+
 
 #-------------------------------------------------------------------------------
 # Agent & AI

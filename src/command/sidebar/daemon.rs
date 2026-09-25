@@ -273,6 +273,29 @@ fn read_sleeping_panes() -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Remote-agent highlight override recorded by `remote_pane_jump` as
+/// "<namespaced_pane_id>|<window_id>". Stays valid while the recorded window
+/// is still active somewhere; cleared once the user moves to another window.
+fn read_remote_active(state: &TmuxState) -> Option<String> {
+    let raw = Cmd::new("tmux")
+        .args(&["show-option", "-gqv", "@workmux_remote_active"])
+        .run_and_capture_stdout()
+        .ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (rid, wid) = raw.split_once('|')?;
+    if state.active_windows.iter().any(|(_, w)| w == wid) {
+        Some(rid.to_string())
+    } else {
+        let _ = Cmd::new("tmux")
+            .args(&["set-option", "-gu", "@workmux_remote_active"])
+            .run();
+        None
+    }
+}
+
 /// Shared git status cache, updated by a background worker thread.
 type GitCache = Arc<Mutex<HashMap<PathBuf, GitStatus>>>;
 
@@ -1610,6 +1633,8 @@ pub fn run() -> Result<()> {
         .run()?;
 
     let mut inactivity_tracker = InactivityTracker::new(Duration::from_secs(10));
+    let mut activity_tracker = super::terminals::ActivityTracker::default();
+    let mut branch_cache = super::terminals::BranchCache::default();
     let mut last_interrupted: HashSet<String> = HashSet::new();
     let mut last_runtime_write = Instant::now();
     let backend_name = mux.name().to_string();
@@ -1649,18 +1674,20 @@ pub fn run() -> Result<()> {
             let agents = StateStore::new()
                 .and_then(|store| store.load_reconciled_agents(mux.as_ref()))
                 .ok();
-            let Some(agents) = agents else { continue };
+            let Some(mut agents) = agents else { continue };
 
-            let (position, layout_mode, sort) = {
+            let (position, layout_mode, sort, terminal_icons) = {
                 let cfg = config.lock().unwrap();
                 (
                     super::read_sidebar_position(&cfg),
                     read_sidebar_layout_mode(&cfg).unwrap_or_default(),
                     cfg.sidebar.sort.unwrap_or_default(),
+                    cfg.sidebar.terminal_icons.clone().unwrap_or_default(),
                 )
             };
             let filter_mode = read_sidebar_filter_mode();
             let sleeping_pane_ids = read_sleeping_panes();
+            let remote_active_pane_id = read_remote_active(&tmux_state);
             let git_statuses = git_cache.lock().ok().map(|c| c.clone()).unwrap_or_default();
             let pr_statuses = pr_cache.lock().ok().map(|c| c.clone()).unwrap_or_default();
             let check_statuses = check_cache
@@ -1674,6 +1701,32 @@ pub fn run() -> Result<()> {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+            // Terminals: every live pane that is not an agent, rebuilt from
+            // scratch each tick and merged into the same list, so recency
+            // sorting interleaves them with agents and jumping just works.
+            if let Ok(live_panes) = mux.get_all_live_pane_info() {
+                activity_tracker.observe(&live_panes, now_ts);
+                let agent_ids: HashSet<String> =
+                    agents.iter().map(|a| a.pane_id.clone()).collect();
+                // Hosts already represented by mirrored rows; their local ssh
+                // panes are then redundant as terminals.
+                let mirrored_hosts: HashSet<String> = agents
+                    .iter()
+                    .filter_map(|a| crate::multiplexer::remote_host(&a.pane_id))
+                    .map(str::to_string)
+                    .collect();
+                agents.extend(super::terminals::synthesize(
+                    &live_panes,
+                    &agent_ids,
+                    &mirrored_hosts,
+                    &activity_tracker,
+                    &mut branch_cache,
+                    &terminal_icons,
+                ));
+                branch_cache
+                    .retain_live(&live_panes.values().map(|p| p.working_dir.clone()).collect());
+            }
+
             let heartbeat_due = last_runtime_write.elapsed() >= Duration::from_secs(10);
 
             // ── Compute tick (no I/O) ──
@@ -1692,6 +1745,7 @@ pub fn run() -> Result<()> {
                     pr_statuses,
                     check_statuses,
                     sleeping_pane_ids,
+                    remote_active_pane_id,
                 },
                 &mut inactivity_tracker,
                 &last_interrupted,
@@ -1717,6 +1771,7 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .map(|a| GitWorkerPath {
                     path: a.path.clone(),
                     is_stale: a
@@ -1731,6 +1786,7 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .filter_map(|a| {
                     let branch = output.snapshot.git_statuses.get(&a.path)?.branch.as_ref()?;
                     Some(GithubWorkerPath {
@@ -1747,11 +1803,12 @@ pub fn run() -> Result<()> {
                 .snapshot
                 .agents
                 .iter()
+                .filter(|a| a.terminal.is_none())
                 .map(|a| a.path.clone())
                 .collect();
             project_config_cache.retain(|p, _| live_paths.contains(p));
             let mut config_dirs: HashSet<PathBuf> = HashSet::new();
-            for a in &output.snapshot.agents {
+            for a in output.snapshot.agents.iter().filter(|a| a.terminal.is_none()) {
                 let dir = if let Some(d) = project_config_cache.get(&a.path) {
                     Some(d.clone())
                 } else {
@@ -1862,6 +1919,7 @@ struct TickInput {
     pr_statuses: HashMap<PathBuf, PrPathEntry>,
     check_statuses: HashMap<PathBuf, CheckPathEntry>,
     sleeping_pane_ids: HashSet<String>,
+    remote_active_pane_id: Option<String>,
 }
 
 /// A state-file write to apply after computing the tick.
@@ -1908,6 +1966,7 @@ fn compute_tick(
         pr_statuses,
         check_statuses,
         sleeping_pane_ids,
+        remote_active_pane_id,
     } = input;
 
     // Phase 1: Inactivity detection
@@ -1948,6 +2007,7 @@ fn compute_tick(
         &sleeping_pane_ids,
     );
     snapshot.interrupted_pane_ids = interrupted.clone();
+    snapshot.remote_active_pane_id = remote_active_pane_id;
 
     // Phase 4: Determine runtime write side effect
     let runtime_write = if interrupted != *last_interrupted || heartbeat_due {
@@ -2005,6 +2065,7 @@ fn gather_captures(
     agents
         .iter()
         .filter(|a| a.status == Some(crate::multiplexer::AgentStatus::Working))
+        .filter(|a| !a.pane_id.starts_with("ssh:"))
         .filter(|a| !tracker.is_confirmed(&a.pane_id, a.updated_ts.unwrap_or(0)))
         .filter_map(|a| {
             mux.capture_pane(&a.pane_id, 5)
@@ -2035,6 +2096,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 
@@ -2548,6 +2610,7 @@ mod tests {
                 session_name: None,
                 boot_id: None,
                 agent_kind: None,
+                terminal: None,
             };
             store.upsert_agent(&state).unwrap();
         }
@@ -2572,6 +2635,7 @@ mod tests {
                         window_pane_counts: HashMap::new(),
                     },
                     captured_panes: captures,
+                    remote_active_pane_id: None,
                     sort: crate::config::SidebarSort::default(),
                     now,
                     now_ts,

@@ -28,6 +28,7 @@ mod panes;
 mod runtime;
 mod snapshot;
 mod template;
+mod terminals;
 mod ui;
 
 use crate::cmd::Cmd;
@@ -934,6 +935,11 @@ pub fn navigate(action: NavAction) -> Result<()> {
     };
 
     let target_pane = panes[target_idx];
+    if target_pane.starts_with("ssh:") {
+        crate::multiplexer::remote_pane_jump(target_pane)?;
+        daemon_ctrl::signal_daemon();
+        return Ok(());
+    }
     Cmd::new("tmux")
         .args(&["switch-client", "-t", target_pane])
         .run()?;

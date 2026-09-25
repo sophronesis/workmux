@@ -124,6 +124,9 @@ pub fn persist_agent_update(
         session_name: live_info.session,
         boot_id,
         agent_kind,
+        // workmux only ever writes state for agents; terminal rows are
+        // synthesized from live panes, or mirrored in from another machine
+        terminal: None,
     };
 
     if let Ok(store) = StateStore::new()

@@ -30,6 +30,9 @@ pub struct RowContext<'a> {
     pub status_color: Color,
     /// Sanitized pane title, filtered against primary/secondary duplicates.
     pub pane_title: Option<String>,
+    /// `>_ ` for a terminal row, empty for an agent. Marks the row *type*;
+    /// the status icon beside it means the same thing it does for an agent.
+    pub terminal_marker: String,
     /// Git status for this agent's path.
     pub git_status: Option<&'a GitStatus>,
     /// PR summary for this agent's path.
@@ -70,14 +73,21 @@ impl<'a> RowContext<'a> {
 
         let is_sleeping = app.sleeping_pane_ids.contains(&agent.pane_id);
         let is_interrupted = app.interrupted_pane_ids.contains(&agent.pane_id);
-        let is_stale = is_agent_stale(
-            agent.status_ts,
-            agent.status,
-            now_secs,
-            app.stale_threshold_secs,
-            is_sleeping,
-            is_interrupted,
-        );
+        // A recognised TUI is never "stale": it is sitting there on purpose,
+        // and the user asked for a plain idle mark rather than a sleep glyph.
+        let is_tui = agent
+            .terminal
+            .as_ref()
+            .is_some_and(|label| label.icon.is_some());
+        let is_stale = !is_tui
+            && is_agent_stale(
+                agent.status_ts,
+                agent.status,
+                now_secs,
+                app.stale_threshold_secs,
+                is_sleeping,
+                is_interrupted,
+            );
         let is_active = app.host_agent_idx == Some(idx);
         let is_selected = selected_idx == Some(idx);
 
@@ -91,6 +101,13 @@ impl<'a> RowContext<'a> {
             .unwrap_or_default();
 
         let pane_title = build_pane_title(agent, &primary, &secondary, app.window_prefix());
+        let terminal_marker = match &agent.terminal {
+            Some(label) => match &label.icon {
+                Some(icon) => format!("{icon} "),
+                None => format!("{} ", app.status_icons.terminal()),
+            },
+            None => String::new(),
+        };
         let git_status = app.git_statuses.get(&agent.path);
         let pr_summary = app.pr_statuses.get(&agent.path);
         let check_summary = app.check_statuses.get(&agent.path);
@@ -109,6 +126,7 @@ impl<'a> RowContext<'a> {
             status_icon_spans,
             status_color,
             pane_title,
+            terminal_marker,
             git_status,
             pr_summary,
             check_summary,
@@ -128,6 +146,9 @@ impl<'a> RowContext<'a> {
     pub fn resolve(&self, token: TokenId) -> String {
         match token {
             TokenId::Primary => self.primary.clone(),
+            TokenId::Remote => crate::multiplexer::remote_host(&self.agent.pane_id)
+                .map(|h| format!("@{h}"))
+                .unwrap_or_default(),
             TokenId::Secondary => self.secondary.clone(),
             TokenId::Worktree => self.worktree_name(),
             TokenId::Project => self.project_name(),
@@ -139,6 +160,7 @@ impl<'a> RowContext<'a> {
                 .map(|index| index.to_string())
                 .unwrap_or_default(),
             TokenId::PaneTitle => self.pane_title.clone().unwrap_or_default(),
+            TokenId::Terminal => self.terminal_marker.clone(),
             TokenId::AgentLabel => self.agent_label.clone(),
             TokenId::StatusIcon => self
                 .status_icon_spans
@@ -299,6 +321,7 @@ impl<'a> RowContext<'a> {
                 .fg(self.palette.text)
                 .add_modifier(Modifier::DIM),
             TokenId::PaneTitle => Style::default().fg(self.palette.dimmed),
+            TokenId::Terminal => Style::default().fg(self.palette.dimmed),
             TokenId::PaneSuffix => Style::default().fg(self.palette.dimmed),
             TokenId::Elapsed => Style::default()
                 .fg(self.palette.text)
@@ -388,6 +411,13 @@ fn build_pane_title(
     secondary: &str,
     window_prefix: &str,
 ) -> Option<String> {
+    // A terminal's third line is its foreground command, which the sidebar
+    // sets itself. The sanitizer below exists to drop *tmux's* noise from
+    // agent panes - hostnames, bare shell names - and "zsh" is precisely the
+    // thing worth showing on a shell row.
+    if let Some(label) = &agent.terminal {
+        return Some(label.command.clone());
+    }
     let title_worktree = extract_worktree_name(
         &agent.session,
         &agent.window_name,
@@ -549,6 +579,26 @@ mod tests {
     }
 
     #[test]
+    fn terminal_rows_keep_their_command_as_the_title() {
+        // "zsh" is noise on an agent pane and the whole point on a shell one
+        assert_eq!(sanitize_pane_title(Some("zsh"), "wt", "proj"), None);
+
+        let mut agent = test_agent();
+        agent.terminal = Some(crate::multiplexer::TerminalLabel {
+            dir: "nixos".to_string(),
+            branch: Some("main".to_string()),
+            command: "zsh".to_string(),
+            icon: None,
+        });
+        agent.pane_title = Some("zsh".to_string());
+
+        assert_eq!(
+            build_pane_title(&agent, "nixos", "main", "wm-").as_deref(),
+            Some("zsh")
+        );
+    }
+
+    #[test]
     fn hostname_pane_title_is_noise() {
         assert!(is_hostname_title_with("framework", Some("framework")));
         assert!(!is_hostname_title_with("framework", Some("other")));
@@ -593,6 +643,7 @@ mod tests {
             window_cmd: None,
             agent_command: None,
             agent_kind: None,
+            terminal: None,
         }
     }
 
@@ -620,6 +671,7 @@ mod tests {
             status_icon_spans: vec![],
             status_color: Color::Reset,
             pane_title: None,
+            terminal_marker: String::new(),
             git_status: git,
             pr_summary: pr,
             check_summary: checks,
