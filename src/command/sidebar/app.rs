@@ -253,6 +253,8 @@ pub struct SidebarApp {
     pub interrupted_pane_ids: std::collections::HashSet<String>,
     /// Pane IDs of agents manually marked as sleeping by the user.
     pub sleeping_pane_ids: std::collections::HashSet<String>,
+    /// User-given row names by pane id (`@workmux_name`), from the daemon.
+    pub pane_names: HashMap<String, String>,
     /// Parsed sidebar templates.
     pub templates: ParsedTemplates,
     /// Most recent template parse failure, shown in the sidebar until fixed.
@@ -329,6 +331,7 @@ impl SidebarApp {
             check_statuses: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
+            pane_names: HashMap::new(),
             templates: ParsedTemplates {
                 compact: parse_line("{primary}").unwrap(),
                 tiles: vec![parse_line("{primary}").unwrap()],
@@ -412,6 +415,7 @@ impl SidebarApp {
             check_statuses: HashMap::new(),
             interrupted_pane_ids: std::collections::HashSet::new(),
             sleeping_pane_ids: std::collections::HashSet::new(),
+            pane_names: HashMap::new(),
             templates,
             template_error,
             agent_icons,
@@ -467,6 +471,7 @@ impl SidebarApp {
         self.check_statuses = snapshot.check_statuses;
         self.interrupted_pane_ids = snapshot.interrupted_pane_ids;
         self.sleeping_pane_ids = snapshot.sleeping_pane_ids;
+        self.pane_names = snapshot.pane_names;
 
         // Check if host window is active
         let was_active = self.host_window_active;
@@ -811,6 +816,54 @@ impl SidebarApp {
         super::daemon_ctrl::signal_daemon();
     }
 
+    /// User-given name of a row, if one was set with `r`.
+    pub fn pane_name(&self, pane_id: &str) -> Option<&str> {
+        self.pane_names.get(pane_id).map(String::as_str)
+    }
+
+    /// Prompt (tmux status line) for a name for the selected row. The name
+    /// lives in the pane's `@workmux_name` option, so it dies with the pane
+    /// and every sidebar picks it up on the next daemon tick. An empty answer
+    /// clears it. Remote rows have no local pane to hold the option.
+    pub fn rename_selected(&mut self) {
+        let Some(pane_id) = self
+            .list_state
+            .selected()
+            .and_then(|i| self.agents.get(i))
+            .map(|a| a.pane_id.clone())
+        else {
+            return;
+        };
+        if crate::multiplexer::remote_host(&pane_id).is_some() {
+            return;
+        }
+        // The prompt template substitutes %1..%9, so a `%12` pane id would be
+        // mangled. Address the pane as `@<window>.<index>` instead.
+        let Ok(target) = Cmd::new("tmux")
+            .args(&[
+                "display-message",
+                "-p",
+                "-t",
+                &pane_id,
+                "#{window_id}.#{pane_index}",
+            ])
+            .run_and_capture_stdout()
+        else {
+            return;
+        };
+        let target = target.trim();
+        let current = self.pane_name(&pane_id).unwrap_or_default().to_string();
+        // `%%%` is the answer with quotes escaped for the double-quoted slot;
+        // the second command wakes the daemon so the row updates at once.
+        let template = format!(
+            "set-option -p -t '{target}' @workmux_name \"%%%\" ; \
+             run-shell -b 'kill -USR1 #{{@workmux_sidebar_daemon_pid}} 2>/dev/null || true'"
+        );
+        let _ = Cmd::new("tmux")
+            .args(&["command-prompt", "-I", &current, "-p", "name:", &template])
+            .run();
+    }
+
     pub fn toggle_filter_mode(&mut self) {
         self.filter_mode = self.filter_mode.toggle();
         // Persist to tmux so all sidebar instances pick it up immediately
@@ -993,9 +1046,12 @@ impl SidebarApp {
         // Compact mode has one line, so it gets the joined form. Tiles have
         // three, so folder and branch take a line each and the command rides
         // the third via pane_title - which also stops long names truncating.
+        let name = self.pane_name(&agent.pane_id);
         if let Some(label) = &agent.terminal {
             return match self.layout_mode {
-                SidebarLayoutMode::Compact => (label.joined(), String::new()),
+                // One line: the name leads it. In tiles it rides the command
+                // line instead (see `RowContext::build`).
+                SidebarLayoutMode::Compact => (with_name(name, label.joined()), String::new()),
                 SidebarLayoutMode::Tiles => (
                     label.dir.clone(),
                     label.branch.clone().unwrap_or_default(),
@@ -1023,13 +1079,22 @@ impl SidebarApp {
             agent.window_name.as_str()
         };
 
-        resolve_labels(
+        let (primary, secondary) = resolve_labels(
             &project,
             session,
             &worktree,
             window,
             agent.window_cmd.as_deref(),
-        )
+        );
+        (with_name(name, primary), secondary)
+    }
+}
+
+/// `"<name> <label>"` when the row has a user-given name.
+pub fn with_name(name: Option<&str>, label: String) -> String {
+    match name {
+        Some(name) => format!("{name} {label}"),
+        None => label,
     }
 }
 
@@ -1295,6 +1360,48 @@ mod tests {
             DEFAULT_HORIZONTAL_TEMPLATES.last(),
             Some(&"{pane_title} {fill} {pr_checks}")
         );
+    }
+
+    #[test]
+    fn row_name_leads_agent_and_compact_terminal_labels() {
+        let mut app = SidebarApp::test_with_template_error(TemplateError {
+            location: String::new(),
+            message: String::new(),
+        });
+        app.pane_names.insert("%1".to_string(), "api".to_string());
+        let mut agent = AgentPane {
+            session: "work".to_string(),
+            window_name: "w".to_string(),
+            pane_id: "%1".to_string(),
+            window_id: "@1".to_string(),
+            window_index: None,
+            path: PathBuf::from("/tmp/a"),
+            pane_title: None,
+            status: None,
+            status_ts: None,
+            updated_ts: None,
+            window_cmd: None,
+            agent_command: None,
+            agent_kind: None,
+            terminal: None,
+        };
+        assert_eq!(app.resolve_agent_labels(&agent).0, "api work");
+
+        agent.terminal = Some(crate::multiplexer::TerminalLabel {
+            dir: "~/p".to_string(),
+            branch: None,
+            command: "zsh".to_string(),
+            icon: None,
+        });
+        app.layout_mode = SidebarLayoutMode::Compact;
+        assert_eq!(app.resolve_agent_labels(&agent).0, "api ~/p/zsh");
+        // tiles: the name goes on the command line, not the folder line
+        app.layout_mode = SidebarLayoutMode::Tiles;
+        assert_eq!(app.resolve_agent_labels(&agent).0, "~/p");
+
+        agent.pane_id = "%2".to_string();
+        app.layout_mode = SidebarLayoutMode::Compact;
+        assert_eq!(app.resolve_agent_labels(&agent).0, "~/p/zsh");
     }
 
     #[test]

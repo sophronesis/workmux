@@ -370,6 +370,7 @@ fn handle_key_press(
         (KeyCode::Char('g'), _) => app.select_first(),
         (KeyCode::Char('v'), _) => app.toggle_layout_mode(),
         (KeyCode::Char('z'), _) => app.toggle_sleeping(),
+        (KeyCode::Char('r'), _) => app.rename_selected(),
         (KeyCode::Char('f'), _) => app.toggle_filter_mode(),
         _ => {}
     }

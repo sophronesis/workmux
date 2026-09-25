@@ -137,6 +137,7 @@ the list. Requires `set -g mouse on` in your `~/.tmux.conf`.
 | `v`     | Toggle layout mode       |
 | `f`     | Toggle session filter    |
 | `z`     | Toggle sleeping on agent |
+| `r`     | Name the selected row    |
 | `q`     | Open quit confirmation   |
 
 ### Session filter
@@ -163,6 +164,22 @@ Press `z` to manually mark an agent as sleeping. Sleeping agents show a 💤 ico
 with dimmed colors and are pushed to the bottom of the list, regardless of their
 actual status. This is useful for temporarily deprioritizing agents you don't
 need to monitor. Press `z` again to wake them up.
+
+### Naming rows
+
+Press `r` to give the selected row a name. It is shown in front of the session
+name on an agent row and in front of the command on a terminal row (compact
+mode puts it at the start of the line). Submit an empty name to clear it.
+
+The name is stored in the pane's `@workmux_name` option, so it goes away with
+the pane and can also be set from a script:
+
+```bash
+tmux set-option -p @workmux_name api      # name the current pane
+tmux set-option -pu @workmux_name         # clear it
+```
+
+Rows mirrored from a remote host cannot be named.
 
 ## Agent navigation hotkeys
 

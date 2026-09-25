@@ -39,11 +39,13 @@ struct TmuxState {
     pane_window_indexes: HashMap<String, u32>,
     active_pane_ids: HashSet<String>,
     window_pane_counts: HashMap<String, usize>,
+    /// User-given row names (`@workmux_name` pane option), non-empty only.
+    pane_names: HashMap<String, String>,
 }
 
 /// Query all sidebar-relevant tmux state in a single command.
 fn query_tmux_state() -> TmuxState {
-    let format = "#{pane_id}\t#{session_name}\t#{window_id}\t#{@workmux_pane_status}\t#{window_active}\t#{session_attached}\t#{pane_active}\t#{window_index}";
+    let format = "#{pane_id}\t#{session_name}\t#{window_id}\t#{@workmux_pane_status}\t#{window_active}\t#{session_attached}\t#{pane_active}\t#{window_index}\t#{@workmux_name}";
     let output = Cmd::new("tmux")
         .args(&["list-panes", "-a", "-F", format])
         .run_and_capture_stdout()
@@ -55,6 +57,7 @@ fn query_tmux_state() -> TmuxState {
     let mut pane_window_indexes = HashMap::new();
     let mut active_pane_ids = HashSet::new();
     let mut window_pane_counts: HashMap<String, usize> = HashMap::new();
+    let mut pane_names = HashMap::new();
 
     for line in output.lines() {
         let mut parts = line.split('\t');
@@ -94,6 +97,12 @@ fn query_tmux_state() -> TmuxState {
         if let Some(index) = parts.next().and_then(|value| value.parse().ok()) {
             pane_window_indexes.insert(pane_id.to_string(), index);
         }
+        // Last field, so a name containing a tab survives: rejoin the rest.
+        let name = parts.collect::<Vec<_>>().join("\t");
+        let name = name.trim();
+        if !name.is_empty() {
+            pane_names.insert(pane_id.to_string(), name.to_string());
+        }
         *window_pane_counts.entry(window_id.to_string()).or_default() += 1;
 
         if win_active && sess_attached {
@@ -111,6 +120,7 @@ fn query_tmux_state() -> TmuxState {
         pane_window_indexes,
         active_pane_ids,
         window_pane_counts,
+        pane_names,
     }
 }
 
@@ -1992,6 +2002,7 @@ fn compute_tick(
     }
 
     // Phase 3: Build snapshot from already-mutated agents
+    let pane_names = tmux_state.pane_names;
     let mut snapshot = build_snapshot(
         agents,
         &tmux_state.window_statuses,
@@ -2012,6 +2023,7 @@ fn compute_tick(
     );
     snapshot.interrupted_pane_ids = interrupted.clone();
     snapshot.remote_active_pane_id = remote_active_pane_id;
+    snapshot.pane_names = pane_names;
 
     // Phase 4: Determine runtime write side effect
     let runtime_write = if interrupted != *last_interrupted || heartbeat_due {
@@ -2638,6 +2650,7 @@ mod tests {
                         pane_window_indexes: HashMap::new(),
                         active_pane_ids: HashSet::new(),
                         window_pane_counts: HashMap::new(),
+                        pane_names: HashMap::new(),
                     },
                     captured_panes: captures,
                     remote_active_pane_id: None,

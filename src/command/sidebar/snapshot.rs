@@ -56,6 +56,10 @@ pub struct SidebarSnapshot {
     /// until the user switches to a different local window).
     #[serde(default)]
     pub remote_active_pane_id: Option<String>,
+    /// User-given row names by pane id (`@workmux_name` pane option, set
+    /// with `r` in the sidebar). Local panes only.
+    #[serde(default)]
+    pub pane_names: HashMap<String, String>,
     pub agents: Vec<AgentPane>,
     /// Increments whenever the daemon reloads the merged config.
     /// Clients use this to trigger their own per-project config reload.
@@ -198,6 +202,7 @@ pub fn build_snapshot(
         interrupted_pane_ids: HashSet::new(),
         sleeping_pane_ids: live_sleeping,
         remote_active_pane_id: None,
+        pane_names: HashMap::new(),
         agents,
         config_version: 0,
     }
